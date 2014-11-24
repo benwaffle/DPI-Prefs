@@ -1,6 +1,6 @@
 #!/usr/bin/env python2
 
-import os, signal
+import os, signal, tempfile, shutil
 from gi.repository import GObject, Gio, Gtk, Gdk
 from gi.repository.GLib import Variant
 
@@ -62,6 +62,9 @@ class DPIPrefs(object):
             output = os.popen("xrandr | grep ' connected' | head -1 | awk '{ print $1 }'").read().rstrip('\n')
             os.system("xrandr --output " + output + ' --scale ' + x.get_text() + 'x' + y.get_text())
 
+        def dpi(self, w):
+            os.system('xrandr --current --dpi ' + w.get_text())
+
     gnome = GNOMEPrefs()
     gdk = GDKPrefs()
     xrandr = XRANDRPrefs()
@@ -82,7 +85,7 @@ def row_spinbutton(text='', value=0, min=0, max=9999999999, onChange=None, float
         spinbutton.connect('value-changed', onChange)
     return hbox_rl(Gtk.Label(text), spinbutton)
 
-def textfield_apply(text='', applyfunc=None):
+def textfield_apply(text, applyfunc=None):
     textfield, button = Gtk.Entry(), Gtk.Button("apply")
     hbox = hbox_rl(Gtk.Label(text), button)
     hbox.pack_end(textfield, False, False, 10)
@@ -90,12 +93,34 @@ def textfield_apply(text='', applyfunc=None):
         button.connect('clicked', lambda w: applyfunc(textfield))
     return hbox
 
+def setenv(var, val):
+    if os.access('/etc/environment', os.W_OK):
+        fd, tmp_path = tempfile.mkstemp()
+        tmp = open(tmp_path, 'w')
+        env = open('/etc/environment')
+        found = False
+        for line in env:
+            if line.startswith(var):
+                found = True
+                line = var + '=' + str(val) + '\n'
+            tmp.write(line)
+        if not found:
+            tmp.write(var + '=' + str(val) + '\n')
+        tmp.close()
+        os.close(fd)
+        env.close()
+        os.remove('/etc/environment')
+        shutil.move(tmp_path, '/etc/environment')
+    else:
+        print 'Error: I don\'t have permission to change /etc/environment'
 
 class DPIApp(Gtk.Window):
     def gnome(self, listbox):
         listbox.add(Gtk.Label('GNOME'))
         listbox.add(row_spinbutton('Scaling Factor', dpi.gnome.scaling_factor, 0, 4294967295, dpi.gnome.set_scaling_factor, False))
         listbox.add(row_spinbutton('Text Scaling Factor', dpi.gnome.text_scaling_factor, 0.5, 3.0, dpi.gnome.set_text_scaling_factor))
+        listbox.add(row_spinbutton('GDK Window Scaling Factor', dpi.gdk.overrides['Gdk/WindowScalingFactor'], 0, onChange=dpi.gdk.set_window_scaling_factor))
+        listbox.add(row_spinbutton('GDK Unscaled DPI', dpi.gdk.overrides['Gdk/UnscaledDPI'], 0, onChange=dpi.gdk.set_unscaled_dpi, float=False))
 
         killgnome = Gtk.Button("Restart GNOME")
         killgnome.connect('clicked', dpi.gnome.restart)
@@ -103,18 +128,17 @@ class DPIApp(Gtk.Window):
 
     def gdk(self, listbox):
         listbox.add(Gtk.Label('GDK'))
-        listbox.add(row_spinbutton('Window Scaling Factor', dpi.gdk.overrides['Gdk/WindowScalingFactor'], 0, onChange=dpi.gdk.set_window_scaling_factor))
-        listbox.add(row_spinbutton('Unscaled DPI', dpi.gdk.overrides['Gdk/UnscaledDPI'], 0, onChange=dpi.gdk.set_unscaled_dpi, float=False))
-        # GDK_SCALE environment variable
+        listbox.add(textfield_apply('GDK_SCALE (environment variable)', lambda w: setenv('GDK_SCALE', w.get_text())))
 
     def xrandr(self, listbox):
         listbox.add(Gtk.Label('xrandr'))
-        listbox.add(textfield_apply('DPI (may have no effect)', lambda w: os.system('xrandr --current --dpi ' + w.get_text())))
+        listbox.add(textfield_apply('DPI (may have no effect)', dpi.xrandr.dpi))
         
         row = textfield_apply('Scale')
         row.pack_end(Gtk.Label('X'), False, False, 0)
         row.pack_end(Gtk.Entry(), False, False, 10)
-        x, y, b = row.get_children()[1], row.get_children()[3], row.get_children()[4]
+        c = row.get_children()
+        x, y, b = c[1], c[3], c[4]
         b.connect('clicked', lambda w: dpi.xrandr.scale(x, y))
         listbox.add(row)
 
@@ -129,9 +153,7 @@ class DPIApp(Gtk.Window):
         self.gdk(listbox)
         listbox.add(Gtk.HSeparator())
         self.xrandr(listbox)
-
-        self.resize(400, 300)
-        self.move(Gdk.Screen.width()/2-200, Gdk.Screen.height()/2-150)
+    
         self.connect('delete-event', Gtk.main_quit)
         self.show_all()
 
